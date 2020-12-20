@@ -1,13 +1,13 @@
 bl_info = {
     "name": "Pie Sculpt",
-    "author": "Darcy Taylor",
-    "version": (1, 0),
+    "author": "D_Ham",
+    "version": (1, 1),
     "blender": (2, 90, 0),
-    "location": "View3D > Add > Mesh > New Object",
-    "description": "Adds a new Mesh Object",
+    "location": "Name: Pie Sculpt, Key: ` ",
+    "description": "Adds ease of use to sculpt mode",
     "warning": "",
     "doc_url": "",
-    "category": "Add Mesh",
+    "category": "Sculpt",
 }
 
 
@@ -16,73 +16,83 @@ from bpy_extras import view3d_utils
 
 #Main pie menu and calling operator
 class PS_MT_pie_sculpt(bpy.types.Menu):
+    bl_idname = "PS_MT_pie_sculpt"
     bl_label = "Pie Sculpt"
 
     def draw(self, context):
         pie = self.layout.menu_pie()
         pie.operator("ps.cube_add", text = "Mesh Add", icon = "BLENDER")
         pie.operator("ps.select_object", text = "Select Object", icon = "BLENDER")
-        pie.operator("ps.mask_brush", text = "Mask Brush", icon = "BLENDER")
 
 
-class PS_OP_pie_sculpt(bpy.types.Operator):
+class PS_OT_pie_sculpt(bpy.types.Operator):
     bl_idname = "ps.pie_sculpt"
     bl_label = "Pie Sculpt"
+    bl_options = {'REGISTER', 'UNDO'}
 
-    def execute(self, context):
-        for ob in context.scene.objects: #rename object to avoid a Blender crash and naming conflicts
-            if ob.name == 'object_mesh':
-                ob.name = "sculpt_mesh"
+    def execute(self, context):      
         if context.mode in {'SCULPT', 'OBJECT', 'EDIT_MESH'}:#If we are in one of our three working modes
             bpy.ops.wm.call_menu_pie(name="PS_MT_pie_sculpt")
             return {'FINISHED'}
         else:
             print("Not in one of our 3 working modes")
             return {'CANCELLED'}
-
+        
 
 #Switch to object mode, Add cube, Add Sub-d mod, Subdiv 2x, back to sculpt mode for shaping
 class PS_OT_cube_add(bpy.types.Operator):
     """Add sub-d Mesh"""
     bl_idname = "ps.cube_add"
     bl_label = "Cube Add"
+    bl_options = {'REGISTER', 'UNDO'}
 
     def modal(self, context: bpy.types.Context, event: bpy.types.Event):
-
-        for ob in context.scene.objects:#select the object_mesh item we just created
-            if context.mode == 'OBJECT':   
-                if ob.name != 'object_mesh':
-                    bpy.ops.object.select_all(action='DESELECT')
-                elif ob.name == 'object_mesh':
-                    ob.select_set(True)
-                    context.view_layer.objects.active = ob
-
-        if event.type in {'ESC', 'DEL', 'BACK_SPACE'}:#cancel and delete object
+        #If we have no active object creat a new one and name it object_mesh
+        if context.active_object == None:
+            bpy.ops.mesh.primitive_cube_add()
+            bpy.ops.ed.undo_push(message='Add an undo step *function may be moved*')#This is a hacky way of preventing a Undo/Redo ctrl + z crash
+            context.active_object.name = "object_mesh"
+            context.active_object.modifiers.new(name="Subdivision", type='SUBSURF')
+            context.active_object.modifiers["Subdivision"].levels = 2
+            context.object.data.use_mirror_x = True
+        #apply our settings and turn off anything we turned on
+        elif event.type == 'RET':
+            bpy.ops.object.mode_set(mode='OBJECT')
+            bpy.ops.object.modifier_apply(modifier="Subdivision")
+            context.object.data.use_mirror_x = False
+            bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+            bpy.context.object.name = "sculpt_mesh"
+            bpy.ops.object.mode_set(mode='SCULPT')
+            return {'FINISHED'}
+        #cancel object creation and do clean up if we have no objects in scene stay in object mode
+        elif event.type in {'ESC', 'DEL', 'BACK_SPACE'}:#cancel and delete object
             if context.mode != 'OBJECT':
                 bpy.ops.object.mode_set(mode='OBJECT')
             else:
-                bpy.ops.object.delete(use_global=False)    
-                return {'CANCELLED'}
-
-        if event.type == 'ACCENT_GRAVE':
-            bpy.ops.object.mode_set(mode='OBJECT')
-            bpy.ops.object.modifier_apply(modifier="Subdivision")
-            bpy.ops.object.mode_set(mode='SCULPT')
-            return {'FINISHED'}
-        else:
+                bpy.ops.object.delete(use_global=False)
+                return {'CANCELLED'}    
+        #pass thru input to shape our object and prevent reuse of creation pie
+        elif context.active_object.name == 'object_mesh' and event.type != 'ACCENT_GRAVE':
             return {'PASS_THROUGH'}
-
+        #enforce editing of the object_mesh to avoid potential errors
+        elif context.active_object.name != 'object_mesh' and context.mode == 'OBJECT':
+            for ob in context.scene.objects:
+                if ob.name != 'object_mesh':
+                    bpy.ops.object.select_all(action='DESELECT')
+                else:
+                    ob.select_set(True)
+                    context.view_layer.objects.active = ob
         return {'RUNNING_MODAL'}
     
     def invoke(self, context, event):
-        # Add and name object make sure there is at least one active object in the scene
-        bpy.ops.mesh.primitive_cube_add()
-        context.active_object.modifiers.new(name="Subdivision", type='SUBSURF')
-        context.active_object.modifiers["Subdivision"].levels = 2
-        context.active_object.name = "object_mesh"        
+        if context.active_object != None:
+            context.view_layer.objects.active = None
+        #This is a great way to set workspace but not really needed in this context
+        #if context.workspace != bpy.data.workspaces['Sculpting']:
+        #   context.window.workspace = bpy.data.workspaces['Sculpting']
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
-
+    
 
 class PS_OT_select_object(bpy.types.Operator):
     """Select Object"""
@@ -93,25 +103,30 @@ class PS_OT_select_object(bpy.types.Operator):
 
     def modal(self, context, event):
         if event.type == 'TIMER':
-            bpy.ops.object.select_all(action='DESELECT')
             Raycast(context, event)
-            return {'RUNNING_MODAL'}
+            
         elif event.type == 'LEFTMOUSE':
             if context.active_object is not None:
                 bpy.ops.object.mode_set(mode='SCULPT')
-            context.window_manager.event_timer_remove(self._timer)
+                context.window_manager.event_timer_remove(self._timer)
             return {'FINISHED'}
-        elif event.type in {'RIGHTMOUSE', 'ESC'}:
+
+        elif event.type in {'ESC', 'DEL', 'BACK_SPACE'}:
+            bpy.ops.object.mode_set(mode='SCULPT')
             context.window_manager.event_timer_remove(self._timer)
             return {'CANCELLED'}
+
         else:
-            return {'RUNNING_MODAL'}
+            return {'PASS_THROUGH'}
+        
+        return {'RUNNING_MODAL'}
 
     def invoke(self, context, event):
         if context.space_data.type == 'VIEW_3D':
-            bpy.ops.object.mode_set(mode='OBJECT')
-            self._timer = context.window_manager.event_timer_add(0.01, window=context.window)
-            context.window_manager.modal_handler_add(self)
+            if context.active_object is not None:
+                bpy.ops.object.mode_set(mode='OBJECT')
+                self._timer = context.window_manager.event_timer_add(0.01, window=context.window)
+                context.window_manager.modal_handler_add(self)
             return {'RUNNING_MODAL'}
         else:
             self.report({'WARNING'}, "Active space must be a View3d")
@@ -175,33 +190,13 @@ def Raycast(context, event):
 
     # now we have the object under the mouse cursor,
     # we could do lots of stuff but for the example just select.
-    if best_obj is not None:
+    if best_obj is not None and context.mode == 'OBJECT':
         # for selection etc. we need the original object,
         # evaluated objects are not in viewlayer
+        bpy.ops.object.select_all(action='DESELECT')
         best_original = best_obj.original
         best_original.select_set(True)
         context.view_layer.objects.active = best_original
-
-
-class PS_OT_mask_brush(bpy.types.Operator):
-    bl_idname = "ps.mask_brush"
-    bl_label = "Mask Brush"
-    
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-
-    def execute(self, context):
-        if context.mode == 'SCULPT':
-            print("In sculpt mode sculpt mode select mask brush")
-            bpy.ops.wm.tool_set_by_id(name="builtin_brush.Mask",space_type="VIEW_3D")
-            return {'FINISHED'}
-        elif context.mode != 'SCULPT':
-            print("Not in sculpt mode sculpt mode activate")
-            bpy.ops.object.mode_set(mode='SCULPT')
-            bpy.ops.wm.tool_set_by_id(name="builtin_brush.Mask", space_type="VIEW_3D")
-            return {'FINISHED'}
-
 
 
 addon_keymaps = []
@@ -209,10 +204,9 @@ addon_keymaps = []
 
 classes = (
     PS_MT_pie_sculpt,
-    PS_OP_pie_sculpt,
+    PS_OT_pie_sculpt,
     PS_OT_cube_add,
     PS_OT_select_object,
-    PS_OT_mask_brush,
 )
 
 
